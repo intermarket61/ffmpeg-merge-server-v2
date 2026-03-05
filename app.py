@@ -1,4 +1,4 @@
-from flask import Flask, request, send_file, jsonify
+from flask import Flask, request, send_file, after_this_request, jsonify
 import subprocess
 import os
 import uuid
@@ -6,7 +6,16 @@ import requests
 
 app = Flask(__name__)
 TMP_DIR = "/tmp"
-
+def cleanup_files(*paths):
+    @after_this_request
+    def _cleanup(response):
+        for p in paths:
+            try:
+                if p and os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+        return response
 # --- Security: protect endpoints with a shared secret ---
 MERGE_SECRET = os.environ.get("MERGE_SECRET", "")
 
@@ -60,7 +69,7 @@ def merge_video_audio():
     if "video" in request.files and "audio" in request.files:
         video_path = save_file(request.files["video"], "video.mp4")
         audio_path = save_file(request.files["audio"], "audio.mp3")
-
+cleanup_files(video_path, audio_path, output_path)
     # ---- MODE B: Provide URLs (cleaner behavior) ----
     else:
         data = request.get_json(silent=True) or {}
@@ -106,7 +115,7 @@ def merge_image_audio():
     image_path = save_file(request.files["image"], "image.png")
     audio_path = save_file(request.files["audio"], "audio.mp3")
     output_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_imageaudio.mp4")
-
+cleanup_files(image_path, audio_path, output_path)
     command = [
         "ffmpeg", "-y",
         "-loop", "1",
@@ -139,7 +148,7 @@ def merge_with_captions():
     video_path = save_file(request.files["video"], "video.mp4")
     subtitle_path = save_file(request.files["subtitle"], "captions.srt")
     output_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_captioned.mp4")
-
+cleanup_files(video_path, subtitle_path, output_path)
     command = [
         "ffmpeg", "-y",
         "-i", video_path,
