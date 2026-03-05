@@ -1,10 +1,28 @@
-from flask import Flask, request, send_file
+from flask import Flask, request, send_file, jsonify
 import subprocess
 import os
 import uuid
+import requests
 
 app = Flask(__name__)
 TMP_DIR = "/tmp"
+
+# --- Security: protect endpoints with a shared secret ---
+MERGE_SECRET = os.environ.get("MERGE_SECRET", "")
+
+def require_secret():
+    """
+    Require header x-merge-secret to match MERGE_SECRET (set in Render env vars).
+    If MERGE_SECRET is empty, we treat it as misconfigured and deny access.
+    """
+    if not MERGE_SECRET:
+        return jsonify({"error": "Server not configured: MERGE_SECRET missing"}), 500
+
+    provided = request.headers.get("x-merge-secret", "")
+    if provided != MERGE_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    return None
 
 def save_file(file, suffix):
     filename = f"{uuid.uuid4().hex}_{suffix}"
@@ -12,17 +30,52 @@ def save_file(file, suffix):
     file.save(path)
     return path
 
-@app.route('/', methods=['GET'])
+def download_to_tmp(url, suffix, timeout=60):
+    """
+    Download a remote URL (e.g., Pexels/S3 presigned URL) to /tmp and return path.
+    """
+    filename = f"{uuid.uuid4().hex}_{suffix}"
+    path = os.path.join(TMP_DIR, filename)
+
+    with requests.get(url, stream=True, timeout=timeout) as r:
+        r.raise_for_status()
+        with open(path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    f.write(chunk)
+    return path
+
+@app.route("/", methods=["GET"])
 def health_check():
     return "FFmpeg Merge Server is running."
 
-@app.route('/merge', methods=['POST'])
+@app.route("/merge", methods=["POST"])
 def merge_video_audio():
-    if 'video' not in request.files or 'audio' not in request.files:
-        return {'error': 'Missing video or audio file'}, 400
+    # Require secret for this endpoint
+    auth_err = require_secret()
+    if auth_err:
+        return auth_err
 
-    video_path = save_file(request.files['video'], 'video.mp4')
-    audio_path = save_file(request.files['audio'], 'audio.mp3')
+    # ---- MODE A: Upload files (current behavior) ----
+    if "video" in request.files and "audio" in request.files:
+        video_path = save_file(request.files["video"], "video.mp4")
+        audio_path = save_file(request.files["audio"], "audio.mp3")
+
+    # ---- MODE B: Provide URLs (cleaner behavior) ----
+    else:
+        data = request.get_json(silent=True) or {}
+        video_url = data.get("video_url")
+        audio_url = data.get("audio_url")
+
+        if not video_url or not audio_url:
+            return jsonify({"error": "Missing video/audio. Provide files (video,audio) or JSON (video_url,audio_url)."}), 400
+
+        try:
+            video_path = download_to_tmp(video_url, "video.mp4")
+            audio_path = download_to_tmp(audio_url, "audio.mp3")
+        except requests.RequestException as e:
+            return jsonify({"error": "Failed to download input URLs", "details": str(e)}), 400
+
     output_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_merged.mp4")
 
     command = [
@@ -37,17 +90,21 @@ def merge_video_audio():
 
     try:
         subprocess.run(command, check=True)
-        return send_file(output_path, mimetype='video/mp4', as_attachment=True)
+        return send_file(output_path, mimetype="video/mp4", as_attachment=True)
     except subprocess.CalledProcessError as e:
-        return {'error': 'FFmpeg failed', 'details': str(e)}, 500
+        return jsonify({"error": "FFmpeg failed", "details": str(e)}), 500
 
-@app.route('/image-audio', methods=['POST'])
+@app.route("/image-audio", methods=["POST"])
 def merge_image_audio():
-    if 'image' not in request.files or 'audio' not in request.files:
-        return {'error': 'Missing image or audio file'}, 400
+    auth_err = require_secret()
+    if auth_err:
+        return auth_err
 
-    image_path = save_file(request.files['image'], 'image.png')
-    audio_path = save_file(request.files['audio'], 'audio.mp3')
+    if "image" not in request.files or "audio" not in request.files:
+        return jsonify({"error": "Missing image or audio file"}), 400
+
+    image_path = save_file(request.files["image"], "image.png")
+    audio_path = save_file(request.files["audio"], "audio.mp3")
     output_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_imageaudio.mp4")
 
     command = [
@@ -66,17 +123,21 @@ def merge_image_audio():
 
     try:
         subprocess.run(command, check=True)
-        return send_file(output_path, mimetype='video/mp4', as_attachment=True)
+        return send_file(output_path, mimetype="video/mp4", as_attachment=True)
     except subprocess.CalledProcessError as e:
-        return {'error': 'FFmpeg failed', 'details': str(e)}, 500
+        return jsonify({"error": "FFmpeg failed", "details": str(e)}), 500
 
-@app.route('/caption-merge', methods=['POST'])
+@app.route("/caption-merge", methods=["POST"])
 def merge_with_captions():
-    if 'video' not in request.files or 'subtitle' not in request.files:
-        return {'error': 'Missing video or subtitle file'}, 400
+    auth_err = require_secret()
+    if auth_err:
+        return auth_err
 
-    video_path = save_file(request.files['video'], 'video.mp4')
-    subtitle_path = save_file(request.files['subtitle'], 'captions.srt')
+    if "video" not in request.files or "subtitle" not in request.files:
+        return jsonify({"error": "Missing video or subtitle file"}), 400
+
+    video_path = save_file(request.files["video"], "video.mp4")
+    subtitle_path = save_file(request.files["subtitle"], "captions.srt")
     output_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_captioned.mp4")
 
     command = [
@@ -89,9 +150,9 @@ def merge_with_captions():
 
     try:
         subprocess.run(command, check=True)
-        return send_file(output_path, mimetype='video/mp4', as_attachment=True)
+        return send_file(output_path, mimetype="video/mp4", as_attachment=True)
     except subprocess.CalledProcessError as e:
-        return {'error': 'FFmpeg failed', 'details': str(e)}, 500
+        return jsonify({"error": "FFmpeg failed", "details": str(e)}), 500
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=80)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=80)
