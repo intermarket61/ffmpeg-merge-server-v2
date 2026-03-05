@@ -99,7 +99,7 @@ cleanup_files(video_path, audio_path, output_path)
 
     try:
         subprocess.run(command, check=True)
-        return send_file(output_path, mimetype="video/mp4", as_attachment=True)
+        return send_file(output_path, mimetype='video/mp4', as_attachment=True, download_name="merged_video.mp4")
     except subprocess.CalledProcessError as e:
         return jsonify({"error": "FFmpeg failed", "details": str(e)}), 500
 
@@ -132,7 +132,7 @@ cleanup_files(image_path, audio_path, output_path)
 
     try:
         subprocess.run(command, check=True)
-        return send_file(output_path, mimetype="video/mp4", as_attachment=True)
+        return send_file(output_path, mimetype='video/mp4', as_attachment=True, download_name="image_audio_video.mp4")
     except subprocess.CalledProcessError as e:
         return jsonify({"error": "FFmpeg failed", "details": str(e)}), 500
 
@@ -159,7 +159,7 @@ cleanup_files(video_path, subtitle_path, output_path)
 
     try:
         subprocess.run(command, check=True)
-        return send_file(output_path, mimetype="video/mp4", as_attachment=True)
+        return send_file(output_path, mimetype='video/mp4', as_attachment=True, download_name="captioned.mp4")
     except subprocess.CalledProcessError as e:
         return jsonify({"error": "FFmpeg failed", "details": str(e)}), 500
 
